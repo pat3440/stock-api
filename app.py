@@ -3,7 +3,15 @@ from flask_cors import CORS
 import yfinance as yf
 import pandas as pd
 
+
+import os
+print("=== RENDER DEBUG ===")
+print("CWD:", os.getcwd())
+print("FILES:", os.listdir("."))
+print("====================")
+
 app = Flask(__name__)
+
 
 # For now, allow requests from anywhere. After it's working, we can restrict this to your WordPress domain.
 CORS(app)
