@@ -3,28 +3,16 @@ from flask_cors import CORS
 import yfinance as yf
 import pandas as pd
 
-
-import os
-print("=== RENDER DEBUG ===")
-print("CWD:", os.getcwd())
-print("FILES:", os.listdir("."))
-print("====================")
-
 app = Flask(__name__)
 
-
-# For now, allow requests from anywhere. After it's working, we can restrict this to your WordPress domain.
+# Allow requests from anywhere for now.
+# After everything is stable, we can restrict this to your WordPress domain.
 CORS(app)
 
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
 
-# Temporary: helps confirm what routes Render thinks exist.
-# Remove this once everything is working.
-@app.route("/debug/routes", methods=["GET"])
-def debug_routes():
-    return jsonify(sorted([r.rule for r in app.url_map.iter_rules()]))
 
 @app.route("/api/price-data", methods=["GET"])
 def price_data():
@@ -32,7 +20,7 @@ def price_data():
     ma1 = request.args.get("ma1", "50")
     ma2 = request.args.get("ma2", "200")
 
-    # Validate inputs
+    # ---- Validate inputs ----
     if not ticker:
         return jsonify({"error": "Ticker required"}), 400
 
@@ -44,7 +32,7 @@ def price_data():
     except Exception:
         return jsonify({"error": "ma1 and ma2 must be positive integers"}), 400
 
-    # Fetch 5y daily data
+    # ---- Fetch 5-year daily data ----
     df = yf.download(
         ticker,
         period="5y",
@@ -56,22 +44,38 @@ def price_data():
     if df is None or df.empty:
         return jsonify({"error": f"No data returned for {ticker}"}), 400
 
-    close = df["Close"].astype("float")
+    # ---- Force Close into a 1-D Series (important fix) ----
+    close_obj = df["Close"]
+
+    # yfinance sometimes returns a DataFrame instead of a Series
+    if isinstance(close_obj, pd.DataFrame):
+        close = close_obj.iloc[:, 0]
+    else:
+        close = close_obj
+
+    close = close.astype("float")
+
+    # ---- Moving averages ----
     ma1_s = close.rolling(ma1_i).mean()
     ma2_s = close.rolling(ma2_i).mean()
 
+    # ---- Dates ----
     dates = df.index.strftime("%Y-%m-%d").tolist()
 
-    def to_list(series: pd.Series):
-        # Convert NaN -> None for JSON; otherwise round floats
+    # ---- Helper: convert Series → JSON-safe list ----
+    def to_list(values):
+        if isinstance(values, pd.DataFrame):
+            values = values.iloc[:, 0]
+
         out = []
-        for v in series.tolist():
+        for v in values.to_numpy().tolist():
             if v != v:  # NaN check
                 out.append(None)
             else:
                 out.append(round(float(v), 2))
         return out
 
+    # ---- Response ----
     return jsonify({
         "ticker": ticker,
         "ma1": ma1_i,
