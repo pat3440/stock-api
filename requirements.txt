@@ -1,2 +1,6 @@
-Flask
+Flask>=2.2
 gunicorn
+flask-cors
+yfinance
+pandas
+numpy
