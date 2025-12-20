@@ -56,6 +56,8 @@ MA_MAP = {
 
 def moving_average(series: pd.Series, length: int, ma_type: str) -> pd.Series:
     key = ma_type.strip().lower()
+    if key not in MA_MAP:
+        raise ValueError(f"Invalid MA type: {ma_type}")
     return MA_MAP[key](series.astype(float), int(length))
 
 @app.route("/", methods=["GET"])
@@ -79,12 +81,13 @@ def price_data():
         return jsonify({"error": "MA lengths must be integers"}), 400
 
     # ---- Fetch Data ----
+    # 5 years provides enough history for 200-day MAs
     df = yf.download(ticker, period="5y", interval="1d", auto_adjust=True, progress=False)
 
     if df is None or df.empty:
         return jsonify({"error": f"No data for {ticker}"}), 400
 
-    # ---- Handle potential multi-index columns (yfinance quirk) ----
+    # ---- Handle potential multi-index columns ----
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
@@ -92,12 +95,14 @@ def price_data():
     close = df["Close"].astype(float)
     volume = df["Volume"].astype(float)
 
-    # ---- Compute MAs ----
+    # ---- Compute MAs and Difference ----
     try:
         ma1_values = moving_average(close, ma1_i, ma1_type)
         ma2_values = moving_average(close, ma2_i, ma2_type)
+        # Calculate Crossover Difference (MA1 - MA2)
+        ma_diff = ma1_values - ma2_values
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": f"Calculation Error: {str(e)}"}), 400
 
     # ---- Helper: JSON clean-up (NaN to None) ----
     def clean_list(series, round_digits=2):
@@ -110,13 +115,14 @@ def price_data():
         "ticker": ticker,
         "dates": df.index.strftime("%Y-%m-%d").tolist(),
         "close": clean_list(close),
-        "volume": clean_list(volume, 0), # Volume usually doesn't need decimals
+        "volume": clean_list(volume, 0),
         "ma1": ma1_i,
         "ma1_type": ma1_type,
         "ma1_values": clean_list(ma1_values),
         "ma2": ma2_i,
         "ma2_type": ma2_type,
         "ma2_values": clean_list(ma2_values),
+        "ma_diff": clean_list(ma_diff)  # Added to the API response
     })
 
 if __name__ == "__main__":
