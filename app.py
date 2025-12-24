@@ -3,14 +3,14 @@ from flask_cors import CORS
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 CORS(app)
 
 # ----------------------------
-# Moving average implementations
+# Moving average implementations (Unchanged)
 # ----------------------------
-
 def sma(series: pd.Series, length: int) -> pd.Series:
     return series.rolling(window=length, min_periods=length).mean()
 
@@ -60,10 +60,6 @@ def moving_average(series: pd.Series, length: int, ma_type: str) -> pd.Series:
         raise ValueError(f"Invalid MA type: {ma_type}")
     return MA_MAP[key](series.astype(float), int(length))
 
-@app.route("/", methods=["GET"])
-def health():
-    return jsonify({"status": "ok"})
-
 @app.route("/api/price-data", methods=["GET"])
 def price_data():
     ticker = (request.args.get("ticker") or "").strip().upper()
@@ -71,40 +67,57 @@ def price_data():
     ma2 = request.args.get("ma2", "200")
     ma1_type = (request.args.get("ma1_type") or "sma").strip().lower()
     ma2_type = (request.args.get("ma2_type") or "sma").strip().lower()
+    
+    # NEW: Get start_date from frontend
+    start_date_str = request.args.get("start_date", "2020-01-01")
 
     if not ticker:
         return jsonify({"error": "Ticker required"}), 400
 
     try:
         ma1_i, ma2_i = int(ma1), int(ma2)
+        requested_start = pd.to_datetime(start_date_str)
     except:
-        return jsonify({"error": "MA lengths must be integers"}), 400
+        return jsonify({"error": "Invalid parameters"}), 400
+
+    # ---- Buffer Logic ----
+    # We fetch extra data before the start_date so MAs have time to "warm up"
+    # A 2x buffer of the longest MA is usually safe for HMA/TEMA
+    buffer_days = max(ma1_i, ma2_i) * 2
+    fetch_start = requested_start - timedelta(days=buffer_days)
 
     # ---- Fetch Data ----
-    # 5 years provides enough history for 200-day MAs
-    df = yf.download(ticker, period="5y", interval="1d", auto_adjust=True, progress=False)
+    df = yf.download(ticker, start=fetch_start.strftime('%Y-%m-%d'), interval="1d", auto_adjust=True, progress=False)
 
     if df is None or df.empty:
         return jsonify({"error": f"No data for {ticker}"}), 400
 
-    # ---- Handle potential multi-index columns ----
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    # ---- Extract Series ----
     close = df["Close"].astype(float)
-    volume = df["Volume"].astype(float)
 
-    # ---- Compute MAs and Difference ----
+    # ---- Compute MAs ----
     try:
         ma1_values = moving_average(close, ma1_i, ma1_type)
         ma2_values = moving_average(close, ma2_i, ma2_type)
-        # Calculate Crossover Difference (MA1 - MA2)
         ma_diff = ma1_values - ma2_values
+        
+        # Combine into a single DataFrame for easy date filtering
+        results_df = pd.DataFrame({
+            "close": close,
+            "ma1_values": ma1_values,
+            "ma2_values": ma2_values,
+            "ma_diff": ma_diff
+        }, index=df.index)
+
+        # Filter out the buffer: only return data from the requested start date onwards
+        final_df = results_df[results_df.index >= requested_start]
+        
     except Exception as e:
         return jsonify({"error": f"Calculation Error: {str(e)}"}), 400
 
-    # ---- Helper: JSON clean-up (NaN to None) ----
+    # ---- Helper: JSON clean-up ----
     def clean_list(series, round_digits=2):
         return [
             round(float(v), round_digits) if np.isfinite(v) else None 
@@ -113,17 +126,12 @@ def price_data():
 
     return jsonify({
         "ticker": ticker,
-        "dates": df.index.strftime("%Y-%m-%d").tolist(),
-        "close": clean_list(close),
-        "volume": clean_list(volume, 0),
-        "ma1": ma1_i,
-        "ma1_type": ma1_type,
-        "ma1_values": clean_list(ma1_values),
-        "ma2": ma2_i,
-        "ma2_type": ma2_type,
-        "ma2_values": clean_list(ma2_values),
-        "ma_diff": clean_list(ma_diff)  # Added to the API response
+        "dates": final_df.index.strftime("%Y-%m-%d").tolist(),
+        "close": clean_list(final_df["close"]),
+        "ma1_values": clean_list(final_df["ma1_values"]),
+        "ma2_values": clean_list(final_df["ma2_values"]),
+        "ma_diff": clean_list(final_df["ma_diff"])
     })
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=5000)
